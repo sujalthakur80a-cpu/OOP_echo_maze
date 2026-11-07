@@ -1,0 +1,214 @@
+// ECHO MAZE - a time-loop co-op puzzle where you cooperate with your own past runs.
+// OOPS (C++) PBL Mini Project
+// Concepts used: Abstraction, Inheritance, Polymorphism, Encapsulation,
+//                Composition, Vectors, Operator Overloading.
+
+#include <iostream>
+#include <vector>
+#include <string>
+using namespace std;
+
+// ---------- Position (operator overloading) ----------
+struct Pos {
+    int r, c;
+    bool operator==(const Pos &o) const { return r == o.r && c == o.c; }
+    Pos operator+(const Pos &o) const { return {r + o.r, c + o.c}; }
+};
+
+// ---------- Abstract base class ----------
+class Entity {
+protected:
+    Pos pos, start;
+public:
+    Entity(Pos p) : pos(p), start(p) {}
+    virtual ~Entity() {}
+    virtual char symbol() const = 0;          // polymorphic: each entity draws itself
+    Pos position() const { return pos; }
+    void setPos(Pos p) { pos = p; }
+    void resetPos() { pos = start; }
+};
+
+// ---------- Player: records every move ----------
+class Player : public Entity {
+    vector<char> history;
+public:
+    Player(Pos p) : Entity(p) {}
+    char symbol() const override { return 'P'; }
+    void record(char m) { history.push_back(m); }
+    const vector<char> &moves() const { return history; }
+    void clearHistory() { history.clear(); }
+};
+
+// ---------- Echo: a ghost that replays a past run ----------
+class Echo : public Entity {
+    vector<char> script;
+    int id;
+public:
+    Echo(Pos p, vector<char> s, int i) : Entity(p), script(s), id(i) {}
+    char symbol() const override { return char('0' + id); }
+    char moveAt(size_t t) const { return t < script.size() ? script[t] : '.'; }
+};
+
+// ---------- Level: map, plates, doors ----------
+class Level {
+    string name;
+    vector<string> grid;
+    vector<Pos> plates;
+    Pos start{0, 0};
+    bool doorsOpen = false;
+public:
+    Level(string n, vector<string> g) : name(n), grid(g) {
+        for (int r = 0; r < (int)grid.size(); r++)
+            for (int c = 0; c < (int)grid[r].size(); c++) {
+                if (grid[r][c] == 'P') { start = {r, c}; grid[r][c] = '.'; }
+                if (grid[r][c] == 'T') plates.push_back({r, c});
+            }
+    }
+    string getName() const { return name; }
+    Pos getStart() const { return start; }
+    int plateCount() const { return plates.size(); }
+    int rows() const { return grid.size(); }
+    int cols() const { return grid[0].size(); }
+    char tile(Pos p) const { return grid[p.r][p.c]; }
+    bool isExit(Pos p) const { return tile(p) == 'E'; }
+    bool isOpen() const { return doorsOpen; }
+
+    bool walkable(Pos p) const {
+        if (p.r < 0 || p.c < 0 || p.r >= rows() || p.c >= cols()) return false;
+        char t = tile(p);
+        if (t == '#') return false;
+        if (t == 'D' && !doorsOpen) return false;
+        return true;
+    }
+    // doors open only while EVERY plate is occupied by someone
+    void updateDoors(const vector<Pos> &occupants) {
+        int pressed = 0;
+        for (const Pos &pl : plates)
+            for (const Pos &o : occupants)
+                if (pl == o) { pressed++; break; }
+        doorsOpen = (pressed == (int)plates.size());
+    }
+};
+
+// ---------- Game controller ----------
+class Game {
+    vector<Level> levels;
+    vector<Echo> echoes;
+    Player *player = nullptr;
+    int tick = 0, runs = 1, totalTicks = 0;
+    static const int MAX_ECHOES = 3;
+
+    static Pos delta(char m) {
+        switch (m) {
+            case 'w': return {-1, 0};
+            case 's': return {1, 0};
+            case 'a': return {0, -1};
+            case 'd': return {0, 1};
+        }
+        return {0, 0};
+    }
+    vector<Pos> occupants() const {
+        vector<Pos> v{player->position()};
+        for (const Echo &e : echoes) v.push_back(e.position());
+        return v;
+    }
+    void draw(const Level &lv) const {
+        cout << string(30, '\n');
+        cout << "=== ECHO MAZE === " << lv.getName() << "\n";
+        cout << "Run: " << runs << "   Tick: " << tick
+             << "   Echoes: " << echoes.size() << "/" << MAX_ECHOES << "\n\n";
+        for (int r = 0; r < lv.rows(); r++) {
+            for (int c = 0; c < lv.cols(); c++) {
+                Pos p{r, c};
+                char ch = lv.tile(p);
+                if (ch == 'D') ch = lv.isOpen() ? '-' : 'D';
+                for (const Echo &e : echoes) if (e.position() == p) ch = e.symbol();
+                if (player->position() == p) ch = player->symbol();
+                cout << ch << ' ';
+            }
+            cout << "\n";
+        }
+        cout << "\nP=you  1,2,3=your past runs (echoes)  T=plate  D=door  E=exit\n";
+        cout << "Doors open only while ALL plates are pressed.\n";
+        cout << "w/a/s/d = move, . = wait, r = reset (your run becomes an echo), q = quit\n> ";
+    }
+    void step(Level &lv, char m) {
+        player->record(m);
+        for (Echo &e : echoes) {                       // echoes replay first
+            Pos n = e.position() + delta(e.moveAt(tick));
+            if (lv.walkable(n)) e.setPos(n);
+        }
+        Pos n = player->position() + delta(m);
+        if (lv.walkable(n)) player->setPos(n);
+        tick++; totalTicks++;
+        lv.updateDoors(occupants());
+    }
+    void resetRun(Level &lv) {
+        if ((int)echoes.size() >= MAX_ECHOES) { cout << "Max echoes reached!\n"; return; }
+        echoes.push_back(Echo(lv.getStart(), player->moves(), echoes.size() + 1));
+        player->resetPos(); player->clearHistory();
+        for (Echo &e : echoes) e.resetPos();
+        tick = 0; runs++;
+        lv.updateDoors(occupants());
+    }
+    void showStars() const {
+        int stars = (runs <= 2) ? 3 : (runs == 3 ? 2 : 1);
+        cout << "\nLEVEL CLEARED in " << runs << " runs, " << totalTicks << " total ticks!\n";
+        cout << "Rating: " << string(stars, '*') << "\n";
+    }
+public:
+    Game() {
+        levels.push_back(Level("Level 1 - The Lonely Door", {
+            "##########",
+            "#P...T...#",
+            "#.########",
+            "#........#",
+            "######D###",
+            "#......E.#",
+            "##########"}));
+        levels.push_back(Level("Level 2 - Two Plates, One You", {
+            "############",
+            "#T...P....T#",
+            "#..........#",
+            "#####DD#####",
+            "#....E.....#",
+            "############"}));
+    }
+    void play() {
+        cout << "ECHO MAZE\nYour past runs replay as ghosts. Use them to hold plates open!\n";
+        cout << "Press Enter to start...";
+        string dummy; getline(cin, dummy);
+        int grandStars = 0;
+        for (size_t i = 0; i < levels.size(); i++) {
+            Level &lv = levels[i];
+            echoes.clear(); tick = 0; runs = 1; totalTicks = 0;
+            player = new Player(lv.getStart());
+            lv.updateDoors(occupants());
+            while (true) {
+                draw(lv);
+                string line;
+                if (!getline(cin, line) || line.empty()) continue;
+                char m = line[0];
+                if (m == 'q') { delete player; cout << "Bye!\n"; return; }
+                if (m == 'r') { resetRun(lv); continue; }
+                if (m == 'w' || m == 'a' || m == 's' || m == 'd' || m == '.') {
+                    step(lv, m);
+                    if (lv.isExit(player->position())) {
+                        draw(lv); showStars();
+                        grandStars += (runs <= 2) ? 3 : (runs == 3 ? 2 : 1);
+                        break;
+                    }
+                }
+            }
+            delete player; player = nullptr;
+            cout << "Press Enter to continue..."; getline(cin, dummy);
+        }
+        cout << "\nYOU ESCAPED THE ECHO MAZE! Total stars: " << grandStars << "\n";
+    }
+};
+
+int main() {
+    Game g;
+    g.play();
+    return 0;
+}
